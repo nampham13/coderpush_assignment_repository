@@ -90,3 +90,9 @@ An update remains `in_progress` until `/complete` is explicitly called. A proces
 ## AI tools
 
 AI assistance was used to scaffold and review the implementation, tests, and documentation. The code and assumptions should be independently reviewed before production use.
+
+## Specification documents
+
+The repository also includes a specification pack under `docs/`, an implementation task queue in `TASK_QUEUE.md`, and a sample fixture in `examples/demo-basic.json`. These documents describe the original planned design, including SQLite persistence; the current implementation instead uses a single JSON data file. Treat the code and tests as the source of truth where they differ, and reconcile the specifications before using them to guide further implementation.
+
+The repository-wide Copilot instruction file is `.github/copilot-instruction.md`.
