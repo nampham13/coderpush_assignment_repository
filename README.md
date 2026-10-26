@@ -2,12 +2,20 @@
 
 A small, local-first Go HTTP service for applying fictional supplier catalog batches. It keeps the current catalog and update history in a JSON file, so completed batches survive application restarts without requiring a live supplier account or third-party packages.
 
+## Project layout
+
+- `cmd/catalogd/` contains the executable entry point.
+- `internal/catalog/` contains catalog models, persistence, HTTP handlers, and
+  their tests as a single internal Go package.
+- `docs/` contains the product and architecture specifications.
+- `examples/` contains fictional input data.
+
 ## Run
 
 Requires Go 1.22 or later.
 
 ```sh
-go run . -addr :8080 -data ./data/catalog.json
+go run ./cmd/catalogd -addr :8080 -data ./data/catalog.json
 ```
 
 The database file is created automatically. Run the tests with:
@@ -72,6 +80,10 @@ An update remains `in_progress` until `/complete` is explicitly called. A proces
 
 ## Design choices and assumptions
 
+- Application components are constructed through `StoreFactory` and
+  `HandlerFactory`; keep new component creation behind factories.
+- Keep each Go source and test file at or below 100 lines. Split implementation
+  by cohesive responsibility rather than allowing large files to grow.
 - The supplier exposes stable product IDs, stable batch IDs, and a monotonically increasing revision for each product. Without a supplier ordering token, the service cannot reliably distinguish newer from older data.
 - `withdrawn: true` is a versioned product event, not a physical deletion. Only a higher supplier revision can change that state.
 - "Completed" means the supplier has signaled that all batches for the update have been delivered. The service cannot infer completeness from the batches it has received.

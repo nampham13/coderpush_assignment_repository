@@ -9,6 +9,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"example.com/supplier-catalog/internal/catalog"
 )
 
 func main() {
@@ -16,12 +18,12 @@ func main() {
 	database := flag.String("data", "./data/catalog.json", "path to the local catalog database")
 	flag.Parse()
 
-	store, err := OpenStore(*database)
+	store, err := catalog.NewStoreFactory(*database).Create()
 	if err != nil {
 		log.Fatalf("open catalog: %v", err)
 	}
 	server := &http.Server{
-		Addr: *address, Handler: NewHandler(store),
+		Addr: *address, Handler: catalog.NewHandlerFactory(store).Create(),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second,
 	}
 

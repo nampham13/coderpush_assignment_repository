@@ -2,21 +2,23 @@
 
 ## Goal
 
-Nhân viên có thể bắt đầu một catalog update, xem tiến độ/thay
-đổi/issues, và resume update dở dang sau khi app restart. Dữ liệu demo
-hoàn toàn giả lập.
+Staff can start a catalog update, review its progress, changes, and issues,
+and resume an interrupted update after an application restart. Demo data is
+entirely fictional.
 
 ## Scope
 
-**Có:** Go HTTP API, SQLite, JSON fixtures, batches, validation,
-create/update/withdraw/reactivate, version ordering, persistent
-issues/history, retry/resume, tests, demo. **Không có trong MVP:**
-supplier thật, auth, frontend hoàn chỉnh, distributed workers, parallel
-batch processing, tự suy luận withdrawal từ product bị thiếu.
+**In scope:** Go HTTP API, SQLite, JSON fixtures, batches, validation,
+create/update/withdraw/reactivate operations, version ordering, persistent
+issues and history, retry/resume, tests, and a demo.
+
+**Out of scope for the MVP:** real supplier integrations, authentication, a
+complete frontend, distributed workers, parallel batch processing, and
+inferring a withdrawal from a product missing from a batch.
 
 ## Event schema
 
-``` json
+```json
 {
   "event_id": "evt-001",
   "product_id": "SKU-100",
@@ -30,78 +32,86 @@ batch processing, tự suy luận withdrawal từ product bị thiếu.
 }
 ```
 
--   `event_id`: định danh ổn định.
--   `product_id`: trim hai đầu, không rỗng, case-sensitive.
--   `source_version`: integer dương, tăng đơn điệu theo product.
--   `action`: `UPSERT`, `WITHDRAW`, `REACTIVATE`.
--   `UPSERT`/`REACTIVATE`: name không rỗng, price_minor \>= 0, currency
-    gồm 3 chữ in hoa, stock_quantity \>= 0. Description mặc định chuỗi
-    rỗng.
--   `WITHDRAW` chỉ cần event_id, product_id, version, action.
--   Unknown action, missing field, malformed types và giá trị không hợp
-    lệ tạo persistent issue; không làm sập cả update.
+- `event_id`: stable event identifier.
+- `product_id`: trim surrounding whitespace; must not be empty; case-sensitive.
+- `source_version`: positive integer that increases monotonically per product.
+- `action`: `UPSERT`, `WITHDRAW`, or `REACTIVATE`.
+- `UPSERT` and `REACTIVATE` require a non-empty name, non-negative
+  `price_minor`, a three-letter uppercase currency, and non-negative
+  `stock_quantity`. `description` defaults to an empty string.
+- `WITHDRAW` requires only the event ID, product ID, version, and action.
+- Unknown actions, missing fields, malformed types, and invalid values create
+  persistent issues; they must not terminate the entire update.
 
-## Invariants bắt buộc
+## Required invariants
 
-1.  Mỗi product_id có tối đa một product.
-2.  Version cũ không ghi đè version mới.
-3.  Event cũ không thể khôi phục sản phẩm đã withdrawn.
-4.  Chỉ REACTIVATE hợp lệ với version cao hơn mới kích hoạt lại.
-5.  Replay không tạo duplicate mutation, receipt, history hoặc issue.
-6.  Product mutation, event outcome và history được commit trong cùng
-    transaction.
-7.  Update không complete nếu còn batch chưa xử lý hoặc lỗi theo policy
-    chưa kết thúc.
-8.  Invalid event không làm mất catalog hiện có.
-9.  Không có product trong batch không đồng nghĩa với withdrawal.
-10. Snapshot input phải bất biến giữa retry/resume.
-11. Cùng version nhưng payload/action khác là `VERSION_CONFLICT`; giữ
-    state hiện tại.
-12. Cùng event_id nhưng payload khác là `EVENT_ID_CONFLICT`; không ghi
-    đè event gốc.
+1. Each product ID identifies at most one product.
+2. An older version never overwrites a newer version.
+3. An older event cannot restore a withdrawn product.
+4. Only a valid `REACTIVATE` event with a higher version can reactivate a
+   product.
+5. Replaying input does not duplicate mutations, receipts, history, or issues.
+6. Product mutation, event outcome, and history are committed in one
+   transaction.
+7. An update is not complete while batches remain unprocessed or policy-defined
+   errors remain unresolved.
+8. An invalid event does not remove existing catalog data.
+9. A product missing from a batch is not considered withdrawn.
+10. The input snapshot remains immutable across retry and resume operations.
+11. A different payload or action at the same version is a
+    `VERSION_CONFLICT`; current state is retained.
+12. A different payload using the same event ID is an `EVENT_ID_CONFLICT`;
+    the original event is retained.
 
 ## Version policy
 
--   Product chưa tồn tại + UPSERT: tạo mới.
--   Version lớn hơn hiện tại: áp dụng action hợp lệ.
--   Version nhỏ hơn: `STALE_IGNORED`, không mutate.
--   Cùng version và cùng payload/action: `DUPLICATE_NOOP`.
--   Cùng version nhưng payload/action khác: issue conflict, giữ state.
--   WITHDRAW giữ tombstone và source_version.
--   REACTIVATE khi product chưa từng tồn tại: reject trong MVP.
--   So sánh source_version theo product; không dùng local timestamp để
-    quyết định ordering.
+- A previously unseen product can be created by `UPSERT`.
+- A valid event with a greater version applies its action.
+- A lower version is `STALE_IGNORED` and does not mutate the product.
+- The same version with the same payload and action is `DUPLICATE_NOOP`.
+- The same version with a different payload or action raises a conflict issue
+  and preserves current state.
+- `WITHDRAW` retains a tombstone and its source version.
+- `REACTIVATE` is rejected when the product has never existed in the MVP.
+- Compare source versions per product; do not use local timestamps for ordering.
 
 ## States
 
-Batch: `PENDING`, `RUNNING`, `COMPLETED`, `COMPLETED_WITH_ISSUES`,
-`RETRYABLE_FAILED`, `FAILED`. Update: `PENDING`, `RUNNING`, `COMPLETED`,
-`COMPLETED_WITH_ISSUES`, `INTERRUPTED`, `FAILED`. `CANCELLED` chỉ thêm
-nếu có cancel API. - `COMPLETED`: tất cả batch xong, không có
-issue/error. - `COMPLETED_WITH_ISSUES`: mọi batch đã được xử lý đến
-trạng thái cuối, nhưng có event rejected/conflict. - `INTERRUPTED`: còn
-việc có thể resume. - `FAILED`: lỗi permanent/không thể tiếp tục. - Chỉ
-một active update tại một thời điểm; enforce bằng transaction, không chỉ
-bằng UI. - Retry lỗi transient; validation/conflict không tự retry vô
-hạn. - Batch chỉ complete sau khi mọi event outcome đã commit.
+Batch states: `PENDING`, `RUNNING`, `COMPLETED`, `COMPLETED_WITH_ISSUES`,
+`RETRYABLE_FAILED`, and `FAILED`.
+
+Update states: `PENDING`, `RUNNING`, `COMPLETED`,
+`COMPLETED_WITH_ISSUES`, `INTERRUPTED`, and `FAILED`. Add `CANCELLED` only if
+a cancel API is introduced.
+
+- `COMPLETED`: every batch is finished with no issue or error.
+- `COMPLETED_WITH_ISSUES`: every batch reached a terminal state, but one or
+  more events were rejected or conflicted.
+- `INTERRUPTED`: resumable work remains.
+- `FAILED`: a permanent error prevents continuation.
+- Enforce at most one active update transactionally, not only in the UI.
+- Retry transient failures; do not retry validation errors or conflicts without
+  a bound.
+- A batch completes only after every event outcome is committed.
 
 ## Progress and issues
 
-Mỗi event có outcome: `CREATED`, `UPDATED`, `WITHDRAWN`, `REACTIVATED`,
+Event outcomes are `CREATED`, `UPDATED`, `WITHDRAWN`, `REACTIVATED`,
 `UNCHANGED`, `DUPLICATE_NOOP`, `STALE_IGNORED`, `REJECTED`,
-`VERSION_CONFLICT`, `EVENT_ID_CONFLICT`. Lưu issue ID,
-update/batch/event/product association, code, severity, message,
-OPEN/RESOLVED, timestamps và dedupe key. Progress phải lấy từ persistent
-state, không đếm lặp khi retry.
+`VERSION_CONFLICT`, and `EVENT_ID_CONFLICT`.
+
+Persist each issue's ID, update/batch/event/product associations, code,
+severity, message, `OPEN`/`RESOLVED` status, timestamps, and deduplication key.
+Derive progress from persistent state so retries do not inflate counts.
 
 ## Acceptance criteria
 
--   Newer version wins; stale version ignored.
--   Duplicate events do not duplicate products/history.
--   Withdrawal cannot be undone by stale UPSERT.
--   Invalid records create issues while valid records proceed.
--   Restart/resume preserves committed work.
--   Double start cannot create two active updates.
--   Update never claims completion while batches remain.
--   API exposes progress, products, history and issues.
--   README documents assumptions, run/test steps and limitations.
+- Newer versions win; stale versions are ignored.
+- Duplicate events do not duplicate products or history.
+- A stale `UPSERT` cannot undo a withdrawal.
+- Invalid records create issues while valid records continue processing.
+- Restart and resume preserve committed work.
+- Concurrent starts cannot create two active updates.
+- An update never reports completion while batches remain.
+- The API exposes progress, products, history, and issues.
+- The README documents assumptions, run/test steps, and limitations.
