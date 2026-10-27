@@ -10,20 +10,36 @@ import (
 	"syscall"
 	"time"
 
-	"example.com/supplier-catalog/internal/catalog"
+	"example.com/supplier-catalog/internal/catalog/httpapi"
+	seedpkg "example.com/supplier-catalog/internal/catalog/seed"
+	"example.com/supplier-catalog/internal/catalog/service"
 )
 
 func main() {
 	address := flag.String("addr", ":8080", "HTTP listen address")
-	database := flag.String("data", "./data/catalog.json", "path to the local catalog database")
+	database := flag.String("data", "./data/catalog.db", "path to the local SQLite database")
+	seed := flag.String("seed", "", "load products from a SQLite mock database and exit")
 	flag.Parse()
 
-	store, err := catalog.NewStoreFactory(*database).Create()
+	store, err := service.NewStoreFactory(*database).Create()
 	if err != nil {
 		log.Fatalf("open catalog: %v", err)
 	}
+	if *seed != "" {
+		count, err := seedpkg.Import(store, *seed)
+		if err != nil {
+			log.Fatalf("seed catalog: %v", err)
+		}
+		log.Printf("seeded %d products from %s", count, *seed)
+		return
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			log.Printf("close catalog database: %v", err)
+		}
+	}()
 	server := &http.Server{
-		Addr: *address, Handler: catalog.NewHandlerFactory(store).Create(),
+		Addr: *address, Handler: httpapi.NewHandlerFactory(store).Create(),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second,
 	}
 

@@ -5,3 +5,11 @@ vendor/
 data/
 .env*
 .DS_Store
+web/node_modules/
+web/dist/
+web/coverage/
+web/.vite/
+web/vite.config.js
+web/vite.config.d.ts
+*.tsbuildinfo
+npm-debug.log*

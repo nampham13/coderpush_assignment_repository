@@ -1,118 +1,65 @@
-# Data Model
+# SQLite Data Model
 
-## Conventions
+## Database setup
 
-SQLite with foreign keys enabled, versioned migrations, UTC timestamps,
-integer `price_minor` (never float), persistent tombstones, no
-hard-delete of history/receipts.
+The application creates the SQLite database on startup and applies
+versioned, idempotent migrations. The default database path is
+`./data/catalog.db`; the parent directory is created automatically. The
+database file is restricted to owner read/write permissions.
 
-## Tables
+## Current tables
 
-### products
+### `products`
 
--   `product_id TEXT PRIMARY KEY`
--   `name TEXT NOT NULL`
--   `description TEXT NOT NULL DEFAULT ''`
--   `price_minor INTEGER CHECK(price_minor >= 0)`
--   `currency TEXT`
--   `stock_quantity INTEGER CHECK(stock_quantity >= 0)`
--   `status TEXT CHECK(status IN ('ACTIVE','WITHDRAWN'))`
--   `source_version INTEGER NOT NULL CHECK(source_version > 0)`
--   `last_event_id TEXT`
--   `created_at TEXT NOT NULL`, `updated_at TEXT NOT NULL`
+The catalog's queryable source of truth:
 
-For a withdrawn product retain the row and source_version as a
-tombstone.
+- `product_id TEXT PRIMARY KEY`
+- `name TEXT NOT NULL`
+- `description TEXT NOT NULL DEFAULT ''`
+- `price_cents INTEGER NOT NULL CHECK(price_cents >= 0)`
+- `revision INTEGER NOT NULL CHECK(revision > 0)`
+- `withdrawn INTEGER NOT NULL DEFAULT 0`
 
-### updates
+Withdrawals retain the product row as a tombstone. An index supports status
+and revision filtering.
 
--   `id TEXT PRIMARY KEY` (UUID)
--   `status TEXT NOT NULL`
--   `source_name TEXT NOT NULL`
--   `input_path TEXT NOT NULL` (internal managed path, not arbitrary
-    client path)
--   `input_sha256 TEXT NOT NULL`
--   `created_at TEXT NOT NULL`, `started_at TEXT NULL`,
-    `finished_at TEXT NULL`
--   `last_error_code TEXT NULL`, `last_error_message TEXT NULL`
+### `updates`
 
-Enforce one active update using a transactional guard/lock strategy; a
-non-atomic check is insufficient.
+- `id TEXT PRIMARY KEY`
+- `status TEXT NOT NULL`
+- `body_json TEXT NOT NULL`
 
-### batches
+The JSON body currently stores the update report, its batches, changes, and
+issues. A status index supports filtering. These nested records are persisted
+atomically with the product table, but are not yet independently queryable.
 
--   `id TEXT PRIMARY KEY`
--   `update_id TEXT NOT NULL REFERENCES updates(id)`
--   `batch_index INTEGER NOT NULL`
--   `status TEXT NOT NULL`
--   `input_path TEXT NOT NULL`, `input_sha256 TEXT NOT NULL`
--   `attempt_count INTEGER NOT NULL DEFAULT 0`
--   `started_at TEXT NULL`, `finished_at TEXT NULL`
--   `last_error_code TEXT NULL`, `last_error_message TEXT NULL`
--   `UNIQUE(update_id, batch_index)`
+### `schema_migrations`
 
-### event_receipts
+- `version INTEGER PRIMARY KEY`
+- `applied_at TEXT NOT NULL`
 
-Stores the canonical result for a stable event ID: -
-`event_id TEXT PRIMARY KEY` - `update_id`, `batch_id` foreign keys -
-`product_id TEXT NULL`, `source_version INTEGER NULL` -
-`payload_sha256 TEXT NOT NULL`, `action TEXT NULL`,
-`outcome TEXT NOT NULL` - `processed_at TEXT NOT NULL`
+Migration version 1 creates the catalog and update tables and indexes. Reopening
+the database does not reapply the schema migration.
 
-If the same event ID appears with a different payload, do not overwrite
-the original receipt. Store the conflicting occurrence separately and
-create an issue.
+## Write atomicity and recovery
 
-### event_attempts
+Each state change runs in a SQLite transaction. Product rows and update report
+rows are replaced together, then the in-memory state is updated only after the
+database commit succeeds. On startup, the application reloads committed rows
+and marks previously `in_progress` updates as `interrupted` so they can be
+resumed.
 
--   `id TEXT PRIMARY KEY`
--   `update_id`, `batch_id` foreign keys
--   `event_index INTEGER NOT NULL`
--   `event_id TEXT NULL`, `product_id TEXT NULL`
--   `payload_sha256 TEXT NOT NULL`, `outcome TEXT NOT NULL`
--   `issue_id TEXT NULL`, `created_at TEXT NOT NULL`
--   `UNIQUE(batch_id, event_index)` so replay of an immutable batch does
-    not duplicate the same event occurrence.
+## Seed data
 
-### product_history
+`examples/mock-data.db` contains 100 deterministic fictional products and the
+demo event records. Run `go run ./cmd/catalogd -data ./data/catalog.db -seed
+./examples/mock-data.db` to import the products. The fixture is opened in
+read-only mode. Matching existing products are skipped; conflicting IDs fail
+without overwriting existing catalog data.
 
--   `id TEXT PRIMARY KEY`
--   `product_id TEXT NOT NULL`
--   `update_id`, `batch_id` foreign keys
--   `event_id TEXT NOT NULL`, `source_version INTEGER NOT NULL`
--   `change_type TEXT NOT NULL`
--   `before_json TEXT NULL`, `after_json TEXT NOT NULL`
--   `created_at TEXT NOT NULL`
--   Unique key preventing duplicate history for one applied event.
+## Planned normalization
 
-### issues
-
--   `id TEXT PRIMARY KEY`
--   `update_id` FK, `batch_id TEXT NULL`
--   `event_id TEXT NULL`, `product_id TEXT NULL`
--   `code TEXT NOT NULL`, `severity TEXT NOT NULL`,
-    `message TEXT NOT NULL`
--   `dedupe_key TEXT NOT NULL UNIQUE`
--   `status TEXT NOT NULL CHECK(status IN ('OPEN','RESOLVED'))`
--   `created_at TEXT NOT NULL`, `resolved_at TEXT NULL`
-
-Keep issues after resolution; resolving must not erase audit history.
-
-### schema_migrations
-
-`version INTEGER PRIMARY KEY`, `applied_at TEXT NOT NULL`.
-
-## Indexes
-
-Index `products(status, updated_at)`, `updates(status, created_at)`,
-`batches(update_id, status, batch_index)`,
-`product_history(product_id, created_at)`,
-`issues(update_id, status, created_at)`.
-
-## Atomicity
-
-For a product mutation, write product + event outcome/receipt + history
-in one transaction. For reject/conflict, persist event attempt/outcome +
-issue together. Mark a batch completed only after every event has a
-committed outcome. Progress counters must be derived from persistent
-rows or updated atomically with deduplication.
+The specification describes separate batch, event receipt, event attempt,
+product history, and issue tables. Those tables are not part of the current
+incremental implementation. Add them with new migrations before relying on
+durable per-event querying or multi-instance worker coordination.
