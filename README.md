@@ -173,6 +173,15 @@ An update report contains its status, per-batch counts and changes, overall cata
 - Batch changes, summaries, and issues are persisted together. If a response is lost, resubmit the same batch ID and content safely.
 - Only one unfinished update can exist at a time in a process. An interrupted update must be resumed before another update can start. Update IDs cannot be reused.
 - A product missing from a batch is not considered withdrawn; the supplier must send an explicit withdrawal with a revision.
+- Batches reach the application through the API or dashboard; this stands in for the supplier delivering them.
+
+## Unfinished work
+
+- **No simulated supplier feed.** Staff or a script submit batches, and outages are recorded manually. A fuller version would pull pages from a fake supplier with fault injection, save a cursor after each committed batch, and continue from that cursor on resume. Today, resume reopens the update, and the remaining batches must still be submitted. Already applied batches are kept, and replaying them is safe.
+- **Completion relies on an explicit signal.** The supplier does not say how many batches to expect, so the update is completed by calling `/complete`. A batch count or last-batch marker from the supplier would let the application verify this itself.
+- **Every change rewrites the full state.** Each change copies the whole state and rewrites it in one SQLite transaction. This is simple and atomic, but slow for large catalogs. Row-level upserts would scale better.
+- **Single instance, no authentication.** There is one process, an in-memory lock, and no user accounts or audit of who made each change.
+- **No dedicated tests for the SQLite repository.** It is covered indirectly by the restart tests in the service package.
 
 ## Assessment submission
 
@@ -181,7 +190,7 @@ An update report contains its status, per-batch counts and changes, overall cata
 
 ## Use of AI tools
 
-AI tools were used to assist with implementation and documentation. The author reviewed the code and can explain the design choices and assumptions during the interview.
+The design is my own: I researched the problem and decided the update rules (revision-based ordering, idempotent batch IDs, withdrawn products kept as tombstones, interruption on restart, and completion blocked by unresolved issues), along with the overall structure. AI coding assistants wrote most of the implementation code and tests from that design, and helped draft this README. I reviewed and tested the generated code and can explain or change any part of it.
 
 ## Repository layout
 
