@@ -57,6 +57,33 @@ go run ./cmd/catalogd -addr :8080 -data ./data/catalog.db -static ./web/dist
 
 Then open <http://localhost:8080>.
 
+## Run tests
+
+Backend tests (from the repository root):
+
+```sh
+go test ./...
+```
+
+Dashboard tests:
+
+```sh
+cd web
+npm ci
+npm test
+```
+
+The Go tests cover the core update rules:
+
+- Replaying a batch is idempotent, older revisions are ignored, and withdrawn products are not restored by stale data.
+- Reusing a batch ID with different content is rejected and recorded as an issue.
+- After a restart, already applied batches are preserved, the update is marked interrupted, and it is not reported as complete until resumed and explicitly completed.
+- Rejected products and supplier outages block completion until their issues are resolved.
+- Importing the sample database twice does not create duplicates.
+- HTTP routes, query validation, and the demo endpoint.
+
+The dashboard tests cover CSV parsing, the batch form, and the products table.
+
 ## Sample data and demo
 
 `examples/mock-data.db` contains 100 fictional products. Import them into the local catalog with:
