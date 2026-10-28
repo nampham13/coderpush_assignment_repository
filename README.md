@@ -1,72 +1,120 @@
-# Supplier catalog updates
+# Supplier Catalog Updates
 
-A small, local-first Go HTTP service for applying fictional supplier catalog batches. It stores catalog products and update records in SQLite, so data survives application restarts without requiring a live supplier account.
+A local-first application that helps staff ingest supplier data batches, track
+the progress of catalog updates, review changes and issues, and resume an
+update that was interrupted. The backend is written in Go and stores data in
+SQLite; a React/Vite dashboard is provided as an optional interface. The demo
+uses only fictional supplier data and needs no accounts or real supplier
+connections.
 
-## Project layout
+## Contents
 
-- `cmd/catalogd/` contains the executable entry point.
-- `internal/catalog/domain/` contains shared catalog models and domain errors.
-- `internal/catalog/service/` contains catalog use cases, update rules, and tests.
-- `internal/catalog/repository/sqlite/` contains SQLite migrations and storage.
-- `internal/catalog/seed/` contains the mock-database import use case and tests.
-- `internal/catalog/httpapi/` contains HTTP handlers and API tests.
-- `web/` contains the React dashboard for catalog and update operations.
-- `docs/` contains the product and architecture specifications.
-- `examples/` contains fictional input data.
+- [Features](#features)
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [Running the dashboard](#running-the-dashboard)
+- [Sample data and demo](#sample-data-and-demo)
+- [Deployment](#deployment)
+- [Testing](#testing)
+- [API](#api)
+- [Processing rules and assumptions](#processing-rules-and-assumptions)
+- [Limitations and future work](#limitations-and-future-work)
+- [Submission links](#submission-links)
+- [Use of AI tools](#use-of-ai-tools)
+- [Repository layout](#repository-layout)
 
-## Run
+## Features
 
-Requires Go 1.22 or later.
+- **Update tracking:** start an update, receive product batches, and inspect
+  its status, changes, per-batch summaries, and open issues.
+- **Full product lifecycle:** new products, changes to existing products, and
+  withdrawals. Withdrawn products are kept as tombstones and never physically
+  deleted.
+- **Safe replays and ordering:** replaying the same batch never creates
+  duplicate products. Revisions older than the stored one are ignored, so stale
+  data can never overwrite newer data or revive a withdrawn product.
+- **Issue tracking:** invalid data and supplier outages are recorded as issues.
+  An update cannot be completed while any issue is unresolved.
+- **Durable progress:** the catalog and update progress are persisted in
+  SQLite. On restart, an in-progress update is marked `interrupted` and can be
+  resumed; committed batch work is preserved.
+- **Interfaces:** an HTTP JSON API and a web dashboard. No network calls are
+  made to real suppliers.
+
+## Requirements
+
+- Go 1.22 or later.
+- Node.js 22 or later and npm, only if you run the dashboard in development
+  mode or build the UI.
+- Docker, only if you want to build the container image.
+
+## Quick start
+
+From the repository root:
 
 ```sh
 go run ./cmd/catalogd -addr :8080 -data ./data/catalog.db
 ```
 
-The SQLite database and schema are created automatically. Run the tests with:
+The application creates the database directory, file, and SQLite schema
+automatically. Open <http://localhost:8080/health> to check that the service
+is running. Stop it with `Ctrl+C`; data is kept in `./data/catalog.db` across
+runs.
+
+### Command-line flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `-addr` | `:8080`, or `:$PORT` when `PORT` is set | HTTP listen address |
+| `-data` | `./data/catalog.db` | Path to the SQLite database |
+| `-seed` | _(none)_ | Import products from a SQLite mock database, then exit |
+| `-static` | _(none)_ | Directory of built dashboard files to serve at `/` |
+
+## Running the dashboard
+
+### Development mode
+
+Start the backend in one terminal as shown above. In a second terminal:
 
 ```sh
-go test ./...
+cd web
+npm ci
+npm run dev
 ```
 
-## Seed mock data
+Open the URL printed by Vite (usually <http://localhost:5173>). Vite proxies
+API requests to the backend at `http://localhost:8080`; edit
+`web/vite.config.ts` to change the backend address.
 
-The repository includes 100 fictional products and demo events in the SQLite
-fixture [`examples/mock-data.db`](./examples/mock-data.db). Seed the products into
-the default local database with:
+### Production build
+
+Build the dashboard and let the Go server serve it alongside the API:
+
+```sh
+cd web
+npm ci
+npm run build
+cd ..
+go run ./cmd/catalogd -addr :8080 -data ./data/catalog.db -static ./web/dist
+```
+
+Then open <http://localhost:8080>.
+
+## Sample data and demo
+
+`examples/mock-data.db` contains 100 fictional products. Import them into the
+local database with:
 
 ```sh
 go run ./cmd/catalogd -data ./data/catalog.db -seed ./examples/mock-data.db
 ```
 
-The command is idempotent: running it again leaves matching products unchanged
-and reports `seeded 0 products`. An existing product ID with different data
-causes the seed to fail rather than overwrite catalog data. Start the server
-after seeding with the `-seed` option omitted.
+The seed command exits once the import finishes. It is safe to run repeatedly:
+matching products are skipped, while an existing ID with different content
+makes the import fail instead of overwriting data. Afterwards, start the server
+without `-seed`.
 
-## Run the web interface
-
-Start the backend in one terminal:
-
-```sh
-go run ./cmd/catalogd -addr :8080 -data ./data/catalog.db
-```
-
-In another terminal, install the web dependencies and start the development
-server:
-
-```sh
-cd web
-npm install
-npm run dev
-```
-
-Open the URL printed by Vite. The development server proxies API requests to
-`http://localhost:8080`. Run the interface checks with `npm test` and create a
-production bundle with `npm run build`.
-
-## Try the demo
-
-In a second terminal, run:
+To run the end-to-end walkthrough against a running server:
 
 ```sh
 curl -X POST http://localhost:8080/demo
@@ -75,28 +123,92 @@ curl http://localhost:8080/catalog
 curl 'http://localhost:8080/catalog?include_withdrawn=true'
 ```
 
-The fictional demo creates a baseline catalog, then applies a seasonal update containing a changed tea, a withdrawn mug, a new coffee, and a deliberately late/older tea revision. Repeating the demo request is safe.
+The demo builds a baseline catalog and then ingests a spring update containing
+changed products, new products, a withdrawn product, and a stale revision that
+arrives late. The endpoint is safe to call again: it uses fixed IDs and never
+creates duplicate products. After calling it, the results are also visible in
+the dashboard.
+
+## Deployment
+
+### Docker
+
+The `Dockerfile` builds the dashboard and the Go binary into a single small
+image. On startup the container seeds the sample data (idempotently) and then
+serves both the API and the dashboard:
+
+```sh
+docker build -t supplier-catalog .
+docker run --rm -p 8080:8080 supplier-catalog
+```
+
+Open <http://localhost:8080>. The container listens on `$PORT` when set and
+stores its database at `$DATA_PATH` (default `/app/data/catalog.db`).
+
+### Render
+
+`render.yaml` defines a Docker-based web service with `/health` as its health
+check. To deploy:
+
+1. Push the repository to GitHub.
+2. In the Render dashboard, choose **New → Blueprint** and select the
+   repository.
+3. Render builds the image, starts the service, and redeploys on every push to
+   the default branch.
+
+> **Note:** the free plan's filesystem is ephemeral. The SQLite database is
+> reset to the 100 sample products on every deploy or restart. To keep data,
+> use a paid plan and attach a persistent disk mounted at `/app/data`.
+
+## Testing
+
+Backend tests:
+
+```sh
+go test ./...
+```
+
+Dashboard tests:
+
+```sh
+cd web
+npm ci
+npm test
+```
+
+Type-check and bundle the dashboard:
+
+```sh
+cd web
+npm ci
+npm run build
+```
 
 ## API
 
-All request and response bodies are JSON. Mutating endpoints persist their changes before returning success.
+All requests and responses use JSON.
 
-| Method and path | Purpose |
-|---|---|
-| `GET /health` | Liveness check |
-| `GET /catalog` | List active products |
-| `GET /catalog?include_withdrawn=true` | Include withdrawn products |
-| `GET /updates` | List update reports |
-| `POST /updates` | Start one update; send `{}` for a generated ID or `{"id":"spring-2026"}` for a chosen ID. An existing ID or another unfinished update returns `409` |
-| `GET /updates/{id}` | Read status, batch summaries, applied changes, and issues |
-| `POST /updates/{id}/batches` | Submit a supplier batch |
-| `POST /updates/{id}/resume` | Resume an interrupted update |
-| `POST /updates/{id}/failures` | Record an outage and interrupt an update |
-| `POST /updates/{id}/issues/{issueID}/resolve` | Mark an issue as addressed |
-| `POST /updates/{id}/complete` | Explicitly record the supplier's completion signal |
-| `POST /demo` | Seed and run the fictional end-to-end example |
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/health` | Service health check |
+| `GET` | `/catalog` | List active products |
+| `GET` | `/catalog?include_withdrawn=true` | Include withdrawn products |
+| `GET` | `/updates` | List updates and their status |
+| `POST` | `/updates` | Start an update, e.g. `{"id":"spring-2026"}`; send `{}` to generate an ID |
+| `GET` | `/updates/{id}` | Update report: status, batch summaries, changes, and issues |
+| `POST` | `/updates/{id}/batches` | Submit a product batch |
+| `POST` | `/updates/{id}/resume` | Resume an interrupted update |
+| `POST` | `/updates/{id}/failures` | Record a supplier outage and interrupt the update |
+| `POST` | `/updates/{id}/issues/{issueID}/resolve` | Mark an issue as resolved |
+| `POST` | `/updates/{id}/complete` | Signal that the supplier has delivered all batches |
+| `POST` | `/demo` | Run the fictional walkthrough |
 
-Example batch:
+`include_withdrawn` accepts a single boolean value (`true`, `false`, `1`,
+`0`, …); anything else returns `400 Bad Request`. Errors use the shape
+`{"error": "message"}`. See [`docs/API_SPEC.md`](docs/API_SPEC.md) for the
+full specification.
+
+### Example: start an update and submit a batch
 
 ```sh
 curl -X POST http://localhost:8080/updates \
@@ -108,45 +220,97 @@ curl -X POST http://localhost:8080/updates/spring-2026/batches \
   -d '{
     "id": "batch-001",
     "products": [
-      {"id":"TEA-100","name":"Harbor Breakfast Tea","description":"Black tea","price_cents":1399,"revision":12},
-      {"id":"MUG-200","revision":8,"withdrawn":true}
+      {"id": "TEA-100", "name": "Harbor Breakfast Tea", "description": "Black tea", "price_cents": 1399, "revision": 12},
+      {"id": "MUG-200", "revision": 8, "withdrawn": true}
     ]
   }'
+
+curl http://localhost:8080/updates/spring-2026
 ```
 
-Create the update first with `POST /updates`. Only one unfinished update may exist at a time; an interrupted update must be resumed or completed before another can start. Update IDs cannot be reused. Batch IDs must be unique within an update. Replaying a batch ID with the same content is an idempotent success; reusing it with different content is rejected and reported as an issue. Product revisions are supplier-provided, positive, and monotonic per product. Lower revisions are recorded as stale and ignored. Equal revisions are unchanged when the content matches and reported as a conflict when it does not.
+### Update reports
 
-An update remains `in_progress` until `/complete` is explicitly called. A process restart marks any in-progress update as `interrupted`; completed work is retained and can be continued with `/resume`. Each batch is processed synchronously and its catalog changes, summary, and issues are persisted together before the request succeeds. If interrupted before that save, submit the batch again; if the save succeeded but the response was lost, replaying the same batch is safe. Every unresolved issue, including a supplier outage or rejected product, blocks completion until a staff member addresses it. Product data validation problems are retained as issues while valid records in that batch continue to apply.
+An update report contains:
 
-## Design choices and assumptions
+- `status`: one of `in_progress`, `interrupted`, or `completed`.
+- `batches`: per-batch counts of applied, stale, unchanged, and rejected
+  products, plus the changes each batch made.
+- `changes`: the list of catalog changes.
+- `issues`: data and outage issues, with their resolution state.
 
-- Application components are constructed through `StoreFactory` and
-  `HandlerFactory`; keep new component creation behind factories.
-- Keep each Go source and test file at or below 100 lines. Split implementation
-  by cohesive responsibility rather than allowing large files to grow.
-- The supplier exposes stable product IDs, stable batch IDs, and a monotonically increasing revision for each product. Without a supplier ordering token, the service cannot reliably distinguish newer from older data.
-- `withdrawn: true` is a versioned product event, not a physical deletion. Only a higher supplier revision can change that state.
-- "Completed" means the supplier has signaled that all batches for the update have been delivered. The service cannot infer completeness from the batches it has received.
-- SQLite stores products in a constrained `products` table and update reports in the `updates` table. Product and update rows are saved in one transaction.
-- The current Store serializes state changes in one process. SQLite uses a busy timeout, but update exclusivity is not yet enforced across multiple running application instances.
-- The service does not know how many batches the supplier intends to send. Staff or an adapter must use the supplier's completion signal to call `/complete`; the application cannot detect a batch that was never delivered. Batch progress is summarized by batch, without a durable receipt/result row for every input product.
-- The application does not make supplier network calls. A staff member or future supplier adapter submits batches through the HTTP API.
+An update completes only when the client calls `/complete` and no issues remain
+open. The server cannot know whether the supplier still has batches to send, so
+the supplier adapter or staff member must call `/complete` only after the
+supplier signals that delivery is finished.
 
-## Unfinished work / production considerations
+## Processing rules and assumptions
 
-- Normalize update batches, event receipts, product history, and issues into separate SQLite tables before supporting advanced querying or multi-instance workers.
-- Add authentication, authorization, audit identity, request rate limits, and deployment configuration before exposing the API beyond a trusted local environment.
-- Define a real supplier adapter, supplier-specific schemas, retry/backoff behavior, and reconciliation rules with the supplier.
-- Add pagination, advanced filtering, and operational metrics.
-- Decide retention policies and how resolved data-quality issues should be corrected or replayed.
-- The demo is an API walkthrough, not a deployed application or a video.
+- Suppliers provide stable product IDs, stable batch IDs, and a positive
+  integer revision that increases per product. Revisions determine ordering;
+  the time a batch is received does not decide which data is newer.
+- A revision lower than the stored revision is reported as stale and leaves
+  the catalog unchanged. An equal revision with identical content is
+  unchanged; an equal revision with a different payload raises a conflict
+  issue. Only a newer revision can change a product's state, including
+  withdrawing or reactivating it.
+- Replaying a batch with the same ID and content is idempotent. Reusing a batch
+  ID with different content is rejected and recorded as an issue. Batches are
+  processed synchronously: catalog changes, summaries, and issues are persisted
+  together before the request succeeds.
+- An update that is in progress when the process restarts becomes
+  `interrupted`. Staff call `resume` and then continue sending batches. If it is
+  unclear whether a batch was stored before a response was lost, resend it with
+  the same batch ID and payload.
+- Only one unfinished update can exist at a time within a process. Update IDs
+  cannot be reused.
+- Invalid product data raises an issue while the other valid products in the
+  batch are still processed. Open issues, including outage issues, must be
+  resolved by staff before the update can complete.
+- A product missing from a delivery does not mean it was withdrawn; the
+  supplier must send an explicit `withdrawn` event with a revision.
 
-## AI tools
+Design rationale is documented in [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
-AI assistance was used to scaffold and review the implementation, tests, and documentation. The code and assumptions should be independently reviewed before production use.
+## Limitations and future work
 
-## Specification documents
+- This is a demo, local-first application. It has no authentication,
+  authorization, audit identity, rate limiting, or security hardening for
+  exposure to the internet.
+- There is no real supplier adapter, per-supplier retry/backoff,
+  supplier-specific schema, or reconciliation of missing batches.
+- SQLite and the current update lock are designed for a single instance;
+  exclusive updates are not guaranteed across multiple instances. Receipts,
+  history, and issues should be normalized into their own tables before
+  supporting advanced queries or multi-instance workers.
+- Reports summarize results per batch and do not durably store the outcome of
+  each individual input product. There is no pagination, advanced filtering,
+  or operational metrics yet.
 
-The repository also includes a specification pack under `docs/`, an implementation task queue in `TASK_QUEUE.md`, and the SQLite mock fixture in `examples/mock-data.db`. The SQLite schema is intentionally a first persistence increment; normalize remaining update details as the matching tasks are implemented.
+## Submission links
 
-The repository-wide Copilot instruction file is `.github/copilot-instruction.md`.
+The assessment accepts either a 3–5 minute video or a URL to a deployed
+application.
+
+- Video: _not yet available_
+- Deployed application: _not yet available_
+
+## Use of AI tools
+
+AI tools were used to help scaffold and review the implementation, tests, and
+documentation. The author has reviewed the design decisions, source code, and
+assumptions and is prepared to explain them in the interview.
+
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| `cmd/catalogd/` | Executable entry point and command-line flags |
+| `internal/catalog/domain/` | Domain models and errors |
+| `internal/catalog/service/` | Use cases, update policy, and persistence orchestration |
+| `internal/catalog/repository/sqlite/` | SQLite schema, migrations, and storage |
+| `internal/catalog/seed/` | Mock-database import |
+| `internal/catalog/httpapi/` | JSON HTTP API and demo endpoint |
+| `web/` | React/Vite dashboard |
+| `examples/` | Fictional sample data |
+| `docs/` | Specifications and design documents |
+| `Dockerfile`, `render.yaml` | Container image and Render deployment |

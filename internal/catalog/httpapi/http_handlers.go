@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"strconv"
 
 	"example.com/supplier-catalog/internal/catalog/domain"
 	"example.com/supplier-catalog/internal/catalog/service"
@@ -20,7 +21,19 @@ func (api *API) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (api *API) catalog(w http.ResponseWriter, r *http.Request) {
-	includeWithdrawn := r.URL.Query().Get("include_withdrawn") == "true"
+	includeWithdrawn := false
+	if values, exists := r.URL.Query()["include_withdrawn"]; exists {
+		if len(values) != 1 {
+			writeError(w, http.StatusBadRequest, "include_withdrawn must be a single boolean value")
+			return
+		}
+		parsed, err := strconv.ParseBool(values[0])
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "include_withdrawn must be a boolean value")
+			return
+		}
+		includeWithdrawn = parsed
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"products": api.store.Catalog(includeWithdrawn)})
 }
 

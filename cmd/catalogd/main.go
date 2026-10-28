@@ -16,9 +16,14 @@ import (
 )
 
 func main() {
-	address := flag.String("addr", ":8080", "HTTP listen address")
+	defaultAddress := ":8080"
+	if port := os.Getenv("PORT"); port != "" {
+		defaultAddress = ":" + port
+	}
+	address := flag.String("addr", defaultAddress, "HTTP listen address (defaults to $PORT when set)")
 	database := flag.String("data", "./data/catalog.db", "path to the local SQLite database")
 	seed := flag.String("seed", "", "load products from a SQLite mock database and exit")
+	static := flag.String("static", "", "directory of built web UI files to serve at /")
 	flag.Parse()
 
 	store, err := service.NewStoreFactory(*database).Create()
@@ -38,8 +43,12 @@ func main() {
 			log.Printf("close catalog database: %v", err)
 		}
 	}()
+	handler := httpapi.NewHandlerFactory(store).Create()
+	if *static != "" {
+		handler = withStaticFiles(handler, *static)
+	}
 	server := &http.Server{
-		Addr: *address, Handler: httpapi.NewHandlerFactory(store).Create(),
+		Addr: *address, Handler: handler,
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second,
 	}
 
@@ -58,4 +67,14 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("serve HTTP: %v", err)
 	}
+}
+
+// withStaticFiles serves the built web UI at / and routes API paths to api.
+func withStaticFiles(api http.Handler, directory string) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/", http.FileServer(http.Dir(directory)))
+	for _, path := range []string{"/health", "/catalog", "/updates", "/updates/", "/demo"} {
+		mux.Handle(path, api)
+	}
+	return mux
 }
