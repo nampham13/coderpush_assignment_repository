@@ -25,9 +25,16 @@ export type Update = {
   id: string
   status: string
   created_at: string
-  batches: Record<string, { applied: number; stale: number; rejected: number }>
+  batches: Record<string, { applied: number; stale: number; unchanged: number; rejected: number }>
   changes: Change[]
   issues: Issue[]
 }
 
-export type BatchInput = { id: string; products: Product[] }
+export type IncomingProduct = {
+  id: string
+  name?: string
+  description?: string
+  price_cents?: number
+  revision: number
+  withdrawn?: boolean
+}

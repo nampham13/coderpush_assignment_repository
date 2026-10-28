@@ -7,6 +7,8 @@ SQLite; a React/Vite dashboard is provided as an optional interface. The demo
 uses only fictional supplier data and needs no accounts or real supplier
 connections.
 
+**Live demo:** <https://coderpush-api.onrender.com>
+
 ## Contents
 
 - [Features](#features)
@@ -99,6 +101,14 @@ go run ./cmd/catalogd -addr :8080 -data ./data/catalog.db -static ./web/dist
 ```
 
 Then open <http://localhost:8080>.
+
+### Entering products
+
+The **Submit a batch** form lets staff enter products row by row (prices in
+dollars), fill in an example, or import a CSV file. The CSV needs a header row
+with at least `id` and `revision`; the full set of columns is
+`id,name,description,price,revision,withdrawn` (`price_cents` is also accepted).
+A template can be downloaded from the form.
 
 ## Sample data and demo
 
@@ -292,7 +302,9 @@ The assessment accepts either a 3–5 minute video or a URL to a deployed
 application.
 
 - Video: _not yet available_
-- Deployed application: _not yet available_
+- Deployed application: <https://coderpush-api.onrender.com> (free Render
+  instance; the first request after idling may take up to a minute while it
+  wakes up, and data resets to the sample catalog on restart)
 
 ## Use of AI tools
 
